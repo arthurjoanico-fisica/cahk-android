@@ -1,0 +1,64 @@
+name: Build CAHK Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_B64" || (echo 'ANDROID_KEYSTORE_BASE64 ausente' && exit 1)
+          test -n "$STORE_PASS" || (echo 'ANDROID_KEYSTORE_PASSWORD ausente' && exit 1)
+          test -n "$KEY_ALIAS" || (echo 'ANDROID_KEY_ALIAS ausente' && exit 1)
+          test -n "$KEY_PASS" || (echo 'ANDROID_KEY_PASSWORD ausente' && exit 1)
+      - name: Decode signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_B64" | base64 --decode > "$GITHUB_WORKSPACE/android/cahk-release.jks"
+      - name: Build signed APK
+        env:
+          CAHK_KEYSTORE_PATH: ${{ github.workspace }}/android/cahk-release.jks
+          CAHK_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAHK_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CAHK_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle -p android :app:assembleRelease --no-daemon
+      - name: Publish APK inside website
+        run: |
+          mkdir -p public/downloads
+          cp android/app/build/outputs/apk/release/app-release.apk public/downloads/CAHK.apk
+          printf '{"available":true,"version":"1.0.0","message":"APK oficial disponível."}\n' > public/downloads/apk-status.json
+      - name: Commit APK to site
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/downloads/CAHK.apk public/downloads/apk-status.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'build: atualiza APK Android [skip ci]'
+          git push
